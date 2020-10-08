@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <immintrin.h>
 #include <functional>
+#include <iomanip>
+#include <fstream>
 //long mem_size = 4000L*1000*1000;
 long mem_size = 4000L*1000*100;
 // The number of memory copies in a thread.
@@ -83,8 +85,7 @@ typedef std::function<void(void*,void*,size_t)> MemCpyFn;
 void memcpy_avx_next_ver(void *pvDest, void *pvSrc, size_t nBytes) {
 
 
-
-    typedef __m256i Reg;
+      typedef __m256i Reg;
 
 	  if(nBytes<sizeof(Reg))
 	  {
@@ -97,7 +98,8 @@ void memcpy_avx_next_ver(void *pvDest, void *pvSrc, size_t nBytes) {
 	  }	 
 
     for(size_t i=0; i + sizeof(Reg) <= nBytes;i+=sizeof(Reg)) {
-        _mm256_stream_si256(reinterpret_cast<Reg*>(reinterpret_cast<char*>(pvDest)+i), _mm256_stream_load_si256(reinterpret_cast<Reg*>(reinterpret_cast<char*>(pvSrc) + i)));
+        _mm256_stream_si256(reinterpret_cast<Reg*>(reinterpret_cast<char*>(pvDest)+i),
+		 _mm256_stream_load_si256(reinterpret_cast<Reg*>(reinterpret_cast<char*>(pvSrc) + i)));
       } 
 
     /* We don't care about this scenario at this moment - WIP */  
@@ -135,7 +137,8 @@ void memcpy_mm_stream_si64(void *pvDest, void *pvSrc, size_t nBytes) {
 
       /* Below is real gain */
       for(size_t i=0; i + sizeof(__int64) <= nBytes;i+=sizeof(__int64)) {
-		_mm_stream_si64 ((reinterpret_cast<__int64*>(reinterpret_cast<char*>(pvDest)+i)), *(reinterpret_cast<__int64*>((reinterpret_cast<char*>(pvSrc) + i))));
+		_mm_stream_si64 ((reinterpret_cast<__int64*>(reinterpret_cast<char*>(pvDest)+i)), 
+		*(reinterpret_cast<__int64*>((reinterpret_cast<char*>(pvSrc) + i))));
 	  } 
 
       /* We don't care about this scenario at this moment - WIP */  
@@ -171,7 +174,8 @@ void memcpy_avx_stream_align32(void *pvDest, void *pvSrc, size_t nBytes)
 
       for(size_t i=0; i + sizeof(Reg) <= nBytes;i+=sizeof(Reg)) {
 		
-        _mm256_stream_pd(reinterpret_cast<double*>(reinterpret_cast<char*>(pvDest)+i), _mm256_load_pd(reinterpret_cast<double*>(reinterpret_cast<char*>(pvSrc) + i)));
+        _mm256_stream_pd(reinterpret_cast<double*>(reinterpret_cast<char*>(pvDest)+i),
+		 _mm256_load_pd(reinterpret_cast<double*>(reinterpret_cast<char*>(pvSrc) + i)));
       } 
 
        size_t left_bytes = nBytes % sizeof(Reg); 
@@ -205,7 +209,8 @@ void memcpy_avx512_stream_align64(void *pvDest, void *pvSrc, size_t nBytes)
 
 for(size_t i=0; i + sizeof(Reg) <= nBytes;i+=sizeof(Reg)) {
 	
-	_mm512_stream_si512 ( reinterpret_cast<Reg*>(reinterpret_cast<char*>(pvDest)+i) , _mm512_stream_load_si512( reinterpret_cast<void*>(reinterpret_cast<char*>(pvSrc) + i))  );
+	_mm512_stream_si512 ( reinterpret_cast<Reg*>(reinterpret_cast<char*>(pvDest)+i),
+	 _mm512_stream_load_si512( reinterpret_cast<void*>(reinterpret_cast<char*>(pvSrc) + i)));
 }
 
 	   size_t left_bytes = nBytes % sizeof(Reg); 
@@ -219,10 +224,6 @@ for(size_t i=0; i + sizeof(Reg) <= nBytes;i+=sizeof(Reg)) {
          std::copy(b,e,out);  				  
 	  }
 }
-
-
-
-
 
 
 void seq_copy_mem(double &throughput, size_t alignment, MemCpyFn mcpy)
@@ -324,9 +325,15 @@ struct Unit {
    MemCpyFn fn;
    size_t align_mask;
    double thru;
-   Unit(const std::string& _name, MemCpyFn _fn , size_t _align_mask=0) : name(_name), fn(_fn), align_mask(_align_mask), thru(0) {}
+   double thru_sorted;
+   Unit(const std::string& _name, MemCpyFn _fn , size_t _align_mask=0) : name(_name), 
+   fn(_fn), align_mask(_align_mask), thru(0), thru_sorted(0) {}
 };
 
+#define format_line(num, x,y,z)   \
+std::cout << "+" << std::setw(8+12+40+20+4) << std::setfill('-') << "+" << std::endl; \ 
+std::cout << std::setfill(' ') << "|" << std::setw(8) << num << "|" \
+<<std::setw(12) << x << "|" << std::setw(40) << y << "|" << std::setw(20) << z << "|" << std::endl;  
 
 int main(int argc, char **argv)
 {
@@ -347,6 +354,7 @@ if(alignment)
 } else {
 	std::cout << "malloc( ... ) has been used instead of posix_memaling" << std::endl;
 }
+  
     std::vector<Unit> test_vector = {
 		{"plain libc memcpy()", memcpy},
 	/*	{"@Da Version with #pragma simd", memcpy1 }, */
@@ -360,21 +368,19 @@ if(alignment)
 
 #ifdef RUN
 
-   for(int i=0;i<1;i++)
+ 
+   for(int sorted=0;sorted<2;sorted++)
    {
-	   if(i==1)
-	   {
-		   std::cout << "====== Sorted ======" << std::endl;
-	   }
+	  
    for(auto& test : test_vector )
    {
-     if( test.align_mask && !(test.align_mask & alignment) )
+     if( test.align_mask && ( alignment < test.align_mask ) )
 	 {
-		 printf("\n######### \n Test %s skiped due to alignment \n######### \n" , test.name.c_str());
+		 printf("\n [WARNING]: Test %s is omitted due to incorrect alignment \n" , test.name.c_str());
 		 continue;
 	 }
 
-    printf("--------------\n");
+    
 	printf("copy with %d threads\n", num_threads);
 	std::vector<std::thread *> threads(num_threads);
 	std::vector<double> throughputs(num_threads);
@@ -388,8 +394,8 @@ if(alignment)
 		delete threads[i];
 		throughput += throughputs[i];
 	}
-	printf("sequential copy throughput: %f GB/s  => %s \n", throughput / 1024 / 1024 / 1024, test.name.c_str());
-  
+	 printf("sequential copy throughput: %f GB/s  => %s \n", throughput / 1024 / 1024 / 1024, test.name.c_str());
+    
 	// Calculate the total number of strides in the memory.
 	size_t num_strides = mem_size / stride;
 	// Calculate the location of the strides that we want to copy.
@@ -403,19 +409,21 @@ if(alignment)
 		if(test.align_mask)
 		{
 		    offsets[i] &= ~(test.align_mask - 1);
+		   // offsets[i] &= ~(alignment - 1);
 
 		}
 		
 		
 	}
 	
-	if(i==1)
-	for(size_t i=0;i<offsets.size();i+=(offsets.size() / num_threads))
-	{      
+	if(sorted)
+	{
+	  for(size_t i=0;i<offsets.size();i+=(offsets.size() / num_threads))
+	  {      
 	      size_t j=(i + offsets.size() / num_threads) -1;
     	  std::sort(offsets.begin()+i, offsets.begin()+j);
+	  }
 	}
-    
 
 	for (int i = 0; i < num_threads; i++) {
 		threads[i] = new std::thread(rand_copy_mem, i, std::ref(throughputs[i]),alignment,test.fn);
@@ -427,28 +435,96 @@ if(alignment)
 		throughput += throughputs[i];
 	}
 	printf("random copy throughput: %f GB/s => %s\n", throughput / 1024 / 1024 / 1024, test.name.c_str());
-    if(i==0)
+    if(sorted)
+	  test.thru_sorted = throughput / 1024 / 1024 / 1024;
+	  else 
 	  test.thru = throughput / 1024 / 1024 / 1024;
+
    }
    }
+  
+    std::string cpu_model_name = "unknown";
+
+    std::ifstream input( "/proc/cpuinfo" );
+	if(input)
+	{
+       for( std::string line; std::getline( input, line ); )
+       {
+             if( line.find("model name") != std::string::npos )
+			 {
+				  auto pos = line.find(":")+1;
+				  if(pos!=std::string::npos)
+				  {
+                  cpu_model_name = line.substr(pos,line.size()-pos);
+				  break;
+				  }
+			 }    
+       }
+	}
+    std::cout << "\n\n>>> CPU="<< cpu_model_name << std::endl;
+	std::cout << ">>> run with memory alignment="<< alignment << std::endl;
+    std::cout << ">>> settings stride=" << stride <<  " bytes mem=" << mem_size << "  ~" << (int)( mem_size/(1024*1024) ) << "MB "<<  " num_threads=" << num_threads <<  std::endl;
+    std::sort(test_vector.begin(),test_vector.end(),
+	[](Unit& u1, Unit& u2) {  return u1.thru > u2.thru; });
+     format_line("the best" ,"version","test name ", "throughput Gb/s" );
+    for(size_t i=0;i<test_vector.size();++i)
+	{	 
+    	auto& test = test_vector[i];  
+	    format_line( i+1 ,"plain",test.name,test.thru );
+	}
+  std::sort(test_vector.begin(),test_vector.end(),
+  [](Unit& u1, Unit& u2) {  return u1.thru_sorted > u2.thru_sorted; });
+     format_line("the best" ,"version","test name ", "throughput Gb/s" );
+    for(size_t i=0;i<test_vector.size();++i)
+	{	 
+    	auto& test = test_vector[i]; 
+	    format_line(i+1 ,"sorted",test.name,test.thru_sorted );
+	}
 
 
-    auto it = std::find_if(test_vector.begin(),test_vector.end(),[](Unit& u ){ return u.name.find("@Da")!=std::string::npos; });
+    auto it = std::find_if(test_vector.begin(),test_vector.end(),
+	[](Unit& u ){ return u.name.find("@Da")!=std::string::npos; });
     if(it!=test_vector.end())
 	{
-  		  auto _max = std::max_element(test_vector.begin(),test_vector.end(),[](Unit& u1, Unit& u2) {  return u1.thru < u2.thru; } );
+  		  auto _max = std::max_element(test_vector.begin(),test_vector.end(),
+			[](Unit& u1, Unit& u2) {  return u1.thru < u2.thru; } );
 
 		  if(_max != it)
 		  {
-			   std::cout << "+--------------------------------------------------+" << std::endl; 
-			   std::cout << " The best copy function is  " << _max->name <<  " gain = " << (int)((1 - (it->thru / _max->thru))*100) << "%" << std::endl;
-			   std::cout << "+--------------------------------------------------+" << std::endl; 
+			  
+			   std::cout << " [PLAIN] : The best copy function is  " << _max->name <<  
+			  	 " gain = " << (int)(( ( _max->thru - it->thru) / it->thru )*100) << "%" << 
+				 " {from="<< it->thru << " Gb/s to="<< _max->thru <<" Gb/s }" << std::endl;
+			   
 		  } 
 
 	}
 
 
+    it = std::find_if(test_vector.begin(),test_vector.end(),
+	[](Unit& u ){ return u.name.find("@Da")!=std::string::npos; });
+    if(it!=test_vector.end())
+	{
+  		  auto _max = std::max_element(test_vector.begin(),test_vector.end(),
+			[](Unit& u1, Unit& u2) {  return u1.thru_sorted < u2.thru_sorted; } );
+
+		  if(_max != it)
+		  {
+			   std::cout << " [SORT] : The best copy function is  " << _max->name << 
+			    " gain = " << (int)(( ( _max->thru_sorted - it->thru_sorted) / it->thru_sorted )*100) << "%" 
+				<< " {from="<< it->thru_sorted << " Gb/s to="<< _max->thru_sorted <<" Gb/s }" << std::endl;
+			
+		  } 
+
+	}
+
+
+
+
 #else
+
+
+      /* Quick Unit Test */
 
      typedef  char TT;
 	 typedef std::vector<TT> V_t; 
